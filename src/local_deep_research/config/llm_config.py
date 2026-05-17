@@ -531,11 +531,32 @@ def get_llm(
             )
         openai_endpoint_url = normalize_url(openai_endpoint_url)
 
+        openai_endpoint_params = dict(common_params)
+        try:
+            extra_body = get_setting_from_snapshot(
+                "llm.extra_body",
+                settings_snapshot=settings_snapshot,
+            )
+            if extra_body:
+                openai_endpoint_params["extra_body"] = extra_body
+        except NoSettingsContextError:
+            pass
+
+        try:
+            reasoning_effort = get_setting_from_snapshot(
+                "llm.reasoning_effort",
+                settings_snapshot=settings_snapshot,
+            )
+            if reasoning_effort:
+                openai_endpoint_params["reasoning_effort"] = reasoning_effort
+        except NoSettingsContextError:
+            pass
+
         llm = ChatOpenAI(  # type: ignore[assignment, call-arg]
             model=model_name,
             api_key=api_key,
             openai_api_base=openai_endpoint_url,
-            **common_params,
+            **openai_endpoint_params,
         )
         return wrap_llm_without_think_tags(
             llm,

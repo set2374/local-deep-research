@@ -408,15 +408,10 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         # mode (no DB metrics/rate-limit persistence). Threaded into the
         # tool factory closures so engines created per tool call inherit it.
         self.programmatic_mode = programmatic_mode
-        # search.iterations (typically 1-5) controls pipeline strategies.
-        # For an agent, each "iteration" is one LLM→tool round-trip, so we
-        # need many more.  Treat any value below the agent minimum as "use
-        # default" rather than clamping to a uselessly low number.
-        self.max_iterations = (
-            int(max_iterations)
-            if int(max_iterations) >= MIN_ITERATIONS
-            else DEFAULT_MAX_ITERATIONS
-        )
+        # Programmatic callers may intentionally pass small budgets for
+        # fast lanes. Preserve the caller's value instead of substituting
+        # the interactive default.
+        self.max_iterations = max(1, int(max_iterations))
         self.max_sub_iterations = int(max_sub_iterations)
         self.include_sub_research = include_sub_research
         self.citation_handler = citation_handler or CitationHandler(
@@ -495,53 +490,64 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         if fetch is not None:
             tools.append(fetch)
 
-        # Specialized search engines
-        try:
-            from local_deep_research.web_search_engines.search_engines_config import (
-                get_available_engines,
-            )
+        from local_deep_research.web_search_engines.retriever_registry import (
+            retriever_registry,
+        )
 
-            available = get_available_engines(
-                settings_snapshot=self.settings_snapshot,
+        pinned = self._search_engine_name in retriever_registry.list_registered()
+        if pinned:
+            logger.info(
+                f"Skipping specialized search tools and sub-research tool: "
+                f"pinned custom retriever '{self._search_engine_name}' is the sole source."
             )
-            current = self._get_current_engine_name()
-            for name, config in available.items():
-                if name in ("auto", "meta") or name == current:
-                    continue
-                desc = config.get("description", f"Search using {name}")
-                strengths = config.get("strengths", [])
-                if strengths:
-                    desc += f" Best for: {', '.join(strengths[:2])}."
+        else:
+            # Specialized search engines
+            try:
+                from local_deep_research.web_search_engines.search_engines_config import (
+                    get_available_engines,
+                )
+
+                available = get_available_engines(
+                    settings_snapshot=self.settings_snapshot,
+                )
+                current = self._get_current_engine_name()
+                for name, config in available.items():
+                    if name in ("auto", "meta") or name == current:
+                        continue
+                    desc = config.get("description", f"Search using {name}")
+                    strengths = config.get("strengths", [])
+                    if strengths:
+                        desc += f" Best for: {', '.join(strengths[:2])}."
+                    tools.append(
+                        _make_specialized_search_tool(
+                            name,
+                            desc,
+                            self.model,
+                            self.settings_snapshot,
+                            self.collector,
+                            programmatic_mode=self.programmatic_mode,
+                        )
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to load specialized search engines for agent tools"
+                )
+
+            # Subagent research tool
+            if self.include_sub_research:
                 tools.append(
-                    _make_specialized_search_tool(
-                        name,
-                        desc,
+                    _make_research_subtopic_tool(
+                        self._search_engine_name,
                         self.model,
                         self.settings_snapshot,
                         self.collector,
+                        self.max_sub_iterations,
+                        progress_callback=self.progress_callback,
                         programmatic_mode=self.programmatic_mode,
+                        fetch_mode=self.fetch_mode,
+                        overall_query=overall_query,
                     )
                 )
-        except Exception:
-            logger.warning(
-                "Failed to load specialized search engines for agent tools"
-            )
-
-        # Subagent research tool
-        if self.include_sub_research:
-            tools.append(
-                _make_research_subtopic_tool(
-                    self._search_engine_name,
-                    self.model,
-                    self.settings_snapshot,
-                    self.collector,
-                    self.max_sub_iterations,
-                    progress_callback=self.progress_callback,
-                    programmatic_mode=self.programmatic_mode,
-                    fetch_mode=self.fetch_mode,
-                    overall_query=overall_query,
-                )
-            )
 
         return tools
 
@@ -616,7 +622,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             )
 
         # Stream agent execution
-        effective_max = max(MIN_ITERATIONS, self.max_iterations)
+        effective_max = max(1, self.max_iterations)
         config = {"recursion_limit": effective_max * 2 + 1}
         iteration = 0
         final_content = ""

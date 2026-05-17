@@ -132,6 +132,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         except NoSettingsContextError:
             pass  # Optional parameter
 
+        cls._apply_generic_openai_extras(llm_params, settings_snapshot)
+
         logger.info(
             f"Creating {cls.provider_name} LLM with model: {model_name}, "
             f"temperature: {temperature}, endpoint: {base_url}"
@@ -182,7 +184,39 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         except NoSettingsContextError:
             pass
 
+        cls._apply_generic_openai_extras(llm_params, settings_snapshot)
+
         return ChatOpenAI(**llm_params)
+
+    @classmethod
+    def _apply_generic_openai_extras(
+        cls,
+        llm_params: dict,
+        settings_snapshot=None,
+    ) -> None:
+        """Forward caller-supplied OpenAI-compatible request extras."""
+
+        try:
+            extra_body = get_setting_from_snapshot(
+                "llm.extra_body",
+                default=None,
+                settings_snapshot=settings_snapshot,
+            )
+            if extra_body:
+                llm_params["extra_body"] = extra_body
+        except NoSettingsContextError:
+            pass
+
+        try:
+            reasoning_effort = get_setting_from_snapshot(
+                "llm.reasoning_effort",
+                default=None,
+                settings_snapshot=settings_snapshot,
+            )
+            if reasoning_effort:
+                llm_params["reasoning_effort"] = reasoning_effort
+        except NoSettingsContextError:
+            pass
 
     @classmethod
     def is_available(cls, settings_snapshot=None):
