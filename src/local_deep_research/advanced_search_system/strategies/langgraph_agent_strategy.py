@@ -788,8 +788,16 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         agent_messages: list,
     ) -> Dict[str, Any]:
         """Apply citation handling and build the return dict."""
+        skip_citation_handler = bool(
+            self.get_setting("langgraph_agent.skip_final_citation_handler", False)
+        )
+        synthesis_message = (
+            f"Finalizing {len(self.collector.results)} sources with agent citations"
+            if skip_citation_handler
+            else f"Synthesizing {len(self.collector.results)} sources with citations"
+        )
         self._update_progress(
-            f"Synthesizing {len(self.collector.results)} sources with citations",
+            synthesis_message,
             90,
             {"phase": "synthesis", "type": "milestone"},
         )
@@ -799,7 +807,16 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         documents: list = []
 
         # Citation handling — only if we have results
-        if all_search_results:
+        if all_search_results and skip_citation_handler:
+            try:
+                documents = self.citation_handler._create_documents(
+                    all_search_results, nr_of_links=nr_of_links
+                )
+            except Exception:
+                logger.warning(
+                    "Citation document creation failed, continuing with raw agent answer"
+                )
+        elif all_search_results:
             try:
                 citation_result = self.citation_handler.analyze_followup(
                     query,

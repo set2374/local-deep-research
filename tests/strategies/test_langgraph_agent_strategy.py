@@ -293,6 +293,40 @@ class TestLangGraphAgentStrategy:
         strategy = self._make_strategy(search=mock_search, settings_snapshot={})
         assert strategy._search_engine_name == "duckduckgo"
 
+    def test_finalize_can_skip_final_citation_handler(self):
+        strategy = self._make_strategy(
+            settings_snapshot={
+                "search.tool": {"value": "mock"},
+                "langgraph_agent.skip_final_citation_handler": True,
+            }
+        )
+        strategy.collector.add_results(
+            [
+                {
+                    "title": "Source",
+                    "link": "https://example.com/source",
+                    "snippet": "source text",
+                }
+            ]
+        )
+        strategy.citation_handler = MagicMock()
+        strategy.citation_handler._create_documents.return_value = ["doc"]
+        strategy.citation_handler.analyze_followup.side_effect = AssertionError(
+            "should not synthesize twice"
+        )
+
+        result = strategy._finalize(
+            "question",
+            "Agent answer [1].",
+            iteration=1,
+            nr_of_links=0,
+            agent_messages=[],
+        )
+
+        assert result["current_knowledge"] == "Agent answer [1]."
+        assert result["documents"] == ["doc"]
+        strategy.citation_handler.analyze_followup.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Citation offset for detailed report mode
