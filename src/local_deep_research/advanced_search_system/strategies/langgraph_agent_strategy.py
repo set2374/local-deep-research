@@ -419,6 +419,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             handler_type="standard",
             settings_snapshot=settings_snapshot,
         )
+        self.tool_model = self._build_tool_model()
         self.collector = SearchResultsCollector(self.all_links_of_system)
 
         fetch_mode = self.get_setting(
@@ -435,6 +436,46 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
 
         # Derive the search engine name for creating fresh instances
         self._search_engine_name = self._resolve_engine_name()
+
+    def _build_tool_model(self) -> BaseChatModel:
+        """Return the helper model used inside mechanical tools.
+
+        The lead LangGraph agent keeps ``self.model``. This optional helper is
+        only used by tool internals such as result fetching/summarization or
+        search-engine LLM helpers after the lead agent has chosen the tool call.
+        """
+        tool_model_name = self.get_setting("langgraph_agent.tool_model", "")
+        if not isinstance(tool_model_name, str) or not tool_model_name.strip():
+            return self.model
+
+        tool_settings = dict(self.settings_snapshot or {})
+        tool_settings["llm.model"] = tool_model_name.strip()
+
+        for source_key, target_key in (
+            ("langgraph_agent.tool_temperature", "llm.temperature"),
+            ("langgraph_agent.tool_max_tokens", "llm.max_tokens"),
+            ("langgraph_agent.tool_extra_body", "llm.extra_body"),
+            ("langgraph_agent.tool_reasoning_effort", "llm.reasoning_effort"),
+        ):
+            value = self.get_setting(source_key, None)
+            if value is not None and value != "":
+                tool_settings[target_key] = value
+
+        if not self.get_setting("langgraph_agent.tool_reasoning_effort", ""):
+            tool_settings.pop("llm.reasoning_effort", None)
+
+        try:
+            from local_deep_research.config.llm_config import get_llm
+
+            logger.info(
+                f"Using helper LLM for LangGraph tool internals: {tool_model_name.strip()}"
+            )
+            return get_llm(settings_snapshot=tool_settings)
+        except Exception:
+            logger.exception(
+                "Failed to build helper LLM for LangGraph tool internals; using lead model"
+            )
+            return self.model
 
     def _resolve_engine_name(self) -> str:
         """Best-effort extraction of the configured engine name."""
@@ -473,7 +514,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             tools.append(
                 _make_web_search_tool(
                     self._search_engine_name,
-                    self.model,
+                    self.tool_model,
                     self.settings_snapshot,
                     self.collector,
                     programmatic_mode=self.programmatic_mode,
@@ -484,7 +525,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         fetch = build_fetch_tool(
             self.fetch_mode,
             self.collector,
-            model=self.model,
+            model=self.tool_model,
             overall_query=overall_query,
         )
         if fetch is not None:
@@ -522,7 +563,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                         _make_specialized_search_tool(
                             name,
                             desc,
-                            self.model,
+                            self.tool_model,
                             self.settings_snapshot,
                             self.collector,
                             programmatic_mode=self.programmatic_mode,
