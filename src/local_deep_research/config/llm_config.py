@@ -552,6 +552,17 @@ def get_llm(
         except NoSettingsContextError:
             pass
 
+        try:
+            request_timeout = get_setting_from_snapshot(
+                "llm.request_timeout",
+                default=None,
+                settings_snapshot=settings_snapshot,
+            )
+            if request_timeout is not None:
+                openai_endpoint_params["request_timeout"] = request_timeout
+        except NoSettingsContextError:
+            pass
+
         llm = ChatOpenAI(  # type: ignore[assignment, call-arg]
             model=model_name,
             api_key=api_key,

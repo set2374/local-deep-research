@@ -700,6 +700,7 @@ class TestGetLlm:
                     "llm.provider": "openai_endpoint",
                     "llm.openai_endpoint.api_key": "custom-key",
                     "llm.openai_endpoint.url": "https://custom.api.com/v1",
+                    "llm.request_timeout": 240,
                     "llm.local_context_window_size": 4096,
                     "llm.context_window_unrestricted": True,
                     "llm.supports_max_tokens": True,
@@ -718,6 +719,7 @@ class TestGetLlm:
                     assert "custom.api.com" in call_kwargs.get(
                         "openai_api_base", ""
                     )
+                    assert call_kwargs["request_timeout"] == 240
 
     def test_openai_endpoint_without_api_key_uses_placeholder(self):
         """Should succeed without API key for local servers like llama.cpp."""
