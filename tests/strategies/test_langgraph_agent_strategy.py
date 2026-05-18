@@ -255,11 +255,10 @@ class TestLangGraphAgentStrategy:
         assert strategy.max_sub_iterations == 3
         assert strategy.include_sub_research is False
 
-    def test_low_max_iterations_uses_default(self):
-        """Pipeline-style low values (e.g. search.iterations=3) should not
-        constrain the agent — it needs many more ReAct cycles."""
+    def test_low_max_iterations_is_preserved_for_programmatic_budgets(self):
+        """Programmatic callers use low values intentionally for bounded lanes."""
         strategy = self._make_strategy(max_iterations=3)
-        assert strategy.max_iterations == 50  # DEFAULT_MAX_ITERATIONS
+        assert strategy.max_iterations == 3
 
     def test_super_init_called_with_kwargs(self):
         """Verify base class attributes are set correctly."""
@@ -326,6 +325,45 @@ class TestLangGraphAgentStrategy:
         assert result["current_knowledge"] == "Agent answer [1]."
         assert result["documents"] == ["doc"]
         strategy.citation_handler.analyze_followup.assert_not_called()
+
+    def test_build_tools_uses_registered_retrievers_as_peer_source_tools(self):
+        from local_deep_research.web_search_engines.retriever_registry import (
+            retriever_registry,
+        )
+
+        retriever_registry.clear()
+        try:
+            retriever_registry.register_multiple(
+                {
+                    "litigus_library": MagicMock(),
+                    "cornell_lii": MagicMock(),
+                }
+            )
+            strategy = self._make_strategy(
+                settings_snapshot={
+                    "search.tool": "litigus_library",
+                    "langgraph_agent.registered_retriever_tools": [
+                        "litigus_library",
+                        "cornell_lii",
+                    ],
+                    "langgraph_agent.registered_retriever_tool_descriptions": {
+                        "litigus_library": "Search Litigus Library for case law.",
+                        "cornell_lii": "Search Cornell LII for statutes and rules.",
+                    },
+                    "search.fetch.mode": "disabled",
+                },
+                include_sub_research=False,
+            )
+
+            tools = strategy._build_tools("New York Banking Law 675")
+            names = [tool.name for tool in tools]
+
+            assert names == ["search_litigus_library", "search_cornell_lii"]
+            assert "web_search" not in names
+            assert tools[0].description == "Search Litigus Library for case law."
+            assert tools[1].description == "Search Cornell LII for statutes and rules."
+        finally:
+            retriever_registry.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +697,27 @@ class TestFetchContentCollectorRegistration:
         assert collector.results == []
         assert collector.sources == []
         assert "Failed to fetch" in output
+
+    def test_fetch_rejects_urls_outside_approved_domains(self):
+        from local_deep_research.advanced_search_system.tools.fetch import (
+            build_fetch_tool,
+        )
+
+        collector = self._make_collector()
+        tool = build_fetch_tool(
+            "full",
+            collector,
+            approved_domains=["law.cornell.edu"],
+        )
+
+        with patch(
+            "local_deep_research.content_fetcher.ContentFetcher",
+            side_effect=AssertionError("fetcher should not be called"),
+        ):
+            output = tool.invoke({"url": "https://example.com/page"})
+
+        assert collector.results == []
+        assert "outside this run's approved source domains" in output
 
     def test_long_content_snippet_is_truncated_with_ellipsis(self):
         collector = self._make_collector()

@@ -235,6 +235,38 @@ def _make_specialized_search_tool(
     return specialized_search
 
 
+def _coerce_registered_tool_names(value: Any) -> list[str]:
+    """Normalize caller-provided registered retriever tool names."""
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
+    if isinstance(value, str):
+        raw_items = value.replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    names: list[str] = []
+    for item in raw_items:
+        name = str(item or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _coerce_tool_descriptions(value: Any) -> dict[str, str]:
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
+    if not isinstance(value, dict):
+        return {}
+    descriptions: dict[str, str] = {}
+    for key, description in value.items():
+        name = str(key or "").strip()
+        text = str(description or "").strip()
+        if name and text:
+            descriptions[name] = text
+    return descriptions
+
+
 def _make_research_subtopic_tool(
     search_engine_name: str,
     model: BaseChatModel,
@@ -300,6 +332,11 @@ def _make_research_subtopic_tool(
                 collector,
                 model=model,
                 overall_query=overall_query,
+                approved_domains=settings_snapshot.get(
+                    "search.fetch.approved_domains", []
+                )
+                if isinstance(settings_snapshot, dict)
+                else [],
             )
             if sub_fetch is not None:
                 sub_tools.append(sub_fetch)
@@ -508,9 +545,43 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         agent's per-fetch focus and the original research question.
         """
         tools = []
+        registered_tool_names = _coerce_registered_tool_names(
+            self.get_setting("langgraph_agent.registered_retriever_tools", [])
+        )
+        registered_tool_descriptions = _coerce_tool_descriptions(
+            self.get_setting("langgraph_agent.registered_retriever_tool_descriptions", {})
+        )
 
-        # Web search (always present if we have a search engine)
-        if self.search is not None:
+        from local_deep_research.web_search_engines.retriever_registry import (
+            retriever_registry,
+        )
+
+        if registered_tool_names:
+            for name in registered_tool_names:
+                if not retriever_registry.is_registered(name):
+                    logger.warning(
+                        f"Registered retriever tool '{name}' was requested but is not registered"
+                    )
+                    continue
+                description = registered_tool_descriptions.get(
+                    name,
+                    f"Search approved legal source: {name}",
+                )
+                tools.append(
+                    _make_specialized_search_tool(
+                        name,
+                        description,
+                        self.tool_model,
+                        self.settings_snapshot,
+                        self.collector,
+                        programmatic_mode=self.programmatic_mode,
+                    )
+                )
+
+        # Web search is present when the caller has not supplied an explicit
+        # approved-source tool set. With explicit source tools, the planner sees
+        # the approved sources as peers instead of routing through one default.
+        if self.search is not None and not registered_tool_names:
             tools.append(
                 _make_web_search_tool(
                     self._search_engine_name,
@@ -527,16 +598,18 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             self.collector,
             model=self.tool_model,
             overall_query=overall_query,
+            approved_domains=self.get_setting("search.fetch.approved_domains", []),
         )
         if fetch is not None:
             tools.append(fetch)
 
-        from local_deep_research.web_search_engines.retriever_registry import (
-            retriever_registry,
-        )
-
         pinned = self._search_engine_name in retriever_registry.list_registered()
-        if pinned:
+        if registered_tool_names:
+            logger.info(
+                "Using explicit registered retriever tools: "
+                f"{', '.join(registered_tool_names)}"
+            )
+        elif pinned:
             logger.info(
                 f"Skipping specialized search tools and sub-research tool: "
                 f"pinned custom retriever '{self._search_engine_name}' is the sole source."
@@ -618,6 +691,28 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         # Build system prompt — fetch_line wording mirrors the active mode
         # so the agent isn't told to use a tool that doesn't exist.
         current_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        tool_names = [str(getattr(item, "name", "")) for item in tools]
+        source_tool_names = [name for name in tool_names if name.startswith("search_")]
+        if source_tool_names:
+            search_line = (
+                "1. Use the approved legal source tools as peer sources: "
+                f"{', '.join(source_tool_names)}. Use the Litigus Library "
+                "tool for case law; use the other approved legal-source tools "
+                "for statutes, rules, regulations, official materials, and "
+                "legal reference sources when the question calls for them.\n"
+            )
+        else:
+            search_line = "1. Start with web_search for initial exploration.\n"
+        if "research_subtopic" in tool_names:
+            sub_research_line = (
+                "2. For complex multi-faceted questions, use research_subtopic to "
+                "investigate specific aspects in parallel (pass 2-5 focused questions).\n"
+            )
+        else:
+            sub_research_line = (
+                "2. Break complex questions into focused searches yourself using the "
+                "available approved source tools.\n"
+            )
         if self.fetch_mode == "disabled":
             fetch_line = (
                 "3. Rely on search snippets — full-page fetching is disabled "
@@ -631,6 +726,16 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             )
         else:  # full
             fetch_line = "3. Use fetch_content to read full pages when snippets aren't enough.\n"
+        if source_tool_names:
+            specialized_line = (
+                "4. Do not treat any source tool as mandatory for every query; "
+                "choose tools based on the legal issue, jurisdiction, and source type needed.\n"
+            )
+        else:
+            specialized_line = (
+                "4. Use search_[engine] tools for domain-specific searches "
+                "(search_arxiv for science, search_pubmed for medical, etc.).\n"
+            )
         system_prompt = (
             f"You are a research assistant writing a research report. Today's date: {current_date}.\n"
             "This is NOT a chat conversation. Your only job is to research the "
@@ -639,12 +744,10 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             "do NOT offer to help further — just research and report.\n"
             "You MUST search the web before answering — never answer from memory alone.\n\n"
             "Strategy:\n"
-            "1. Start with web_search for initial exploration.\n"
-            "2. For complex multi-faceted questions, use research_subtopic to "
-            "investigate specific aspects in parallel (pass 2-5 focused questions).\n"
+            f"{search_line}"
+            f"{sub_research_line}"
             f"{fetch_line}"
-            "4. Use search_[engine] tools for domain-specific searches "
-            "(search_arxiv for science, search_pubmed for medical, etc.).\n"
+            f"{specialized_line}"
             "5. When you have enough information, provide a comprehensive answer "
             "citing sources as [1], [2], etc.\n"
         )

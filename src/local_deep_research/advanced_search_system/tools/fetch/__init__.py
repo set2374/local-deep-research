@@ -27,6 +27,7 @@ in-strategy implementation, so downstream prompt formatting is unchanged.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import tool
@@ -46,6 +47,39 @@ FETCH_MODES = (
     "summary_focus",
     "summary_focus_query",
 )
+
+
+def _coerce_approved_domains(value: Any) -> tuple[str, ...]:
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
+    if isinstance(value, str):
+        raw_items = value.replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    domains: list[str] = []
+    for item in raw_items:
+        domain = str(item or "").strip().lower().removeprefix("*.")
+        if domain and domain not in domains:
+            domains.append(domain)
+    return tuple(domains)
+
+
+def _url_allowed(url: str, approved_domains: tuple[str, ...]) -> bool:
+    if not approved_domains:
+        return True
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.netloc or "").lower().removeprefix("www.")
+    if not host:
+        return False
+    for domain in approved_domains:
+        normalized = domain.lstrip(".")
+        if normalized and (host == normalized or host.endswith(f".{normalized}")):
+            return True
+    return False
 
 
 def _register_in_collector(
@@ -72,12 +106,14 @@ def _register_in_collector(
     return start + 1
 
 
-def _make_full_fetch_tool(collector: Any):
+def _make_full_fetch_tool(collector: Any, approved_domains: tuple[str, ...]):
     @tool
     def fetch_content(url: str) -> str:
         """Download and read the full text content from a URL. Use when search snippets aren't detailed enough."""
         from local_deep_research.content_fetcher import ContentFetcher
 
+        if not _url_allowed(url, approved_domains):
+            return "Fetch rejected: URL is outside this run's approved source domains."
         try:
             with ContentFetcher(timeout=CONTENT_FETCH_TIMEOUT) as fetcher:
                 result = fetcher.fetch(url, max_length=CONTENT_MAX_LENGTH)
@@ -102,6 +138,7 @@ def _make_summary_fetch_tool(
     collector: Any,
     model: BaseChatModel,
     overall_query: str | None,
+    approved_domains: tuple[str, ...],
 ):
     """Build the summary-mode fetch tool.
 
@@ -121,6 +158,8 @@ def _make_summary_fetch_tool(
         """
         from local_deep_research.content_fetcher import ContentFetcher
 
+        if not _url_allowed(url, approved_domains):
+            return "Fetch rejected: URL is outside this run's approved source domains."
         try:
             with ContentFetcher(timeout=CONTENT_FETCH_TIMEOUT) as fetcher:
                 result = fetcher.fetch(url, max_length=CONTENT_MAX_LENGTH)
@@ -187,6 +226,7 @@ def build_fetch_tool(
     *,
     model: BaseChatModel | None = None,
     overall_query: str = "",
+    approved_domains: Any = (),
 ):
     """Build the agent-facing ``fetch_content`` tool for *mode*.
 
@@ -195,21 +235,30 @@ def build_fetch_tool(
     should also drop the corresponding instruction line so the agent
     isn't told to use a tool that doesn't exist).
     """
+    approved_domain_tuple = _coerce_approved_domains(approved_domains)
     if mode == "disabled":
         return None
     if mode == "full":
-        return _make_full_fetch_tool(collector)
+        return _make_full_fetch_tool(collector, approved_domain_tuple)
     if mode == "summary_focus":
         if model is None:
             raise ValueError("summary_focus fetch mode requires a model")
-        return _make_summary_fetch_tool(collector, model, overall_query=None)
+        return _make_summary_fetch_tool(
+            collector,
+            model,
+            overall_query=None,
+            approved_domains=approved_domain_tuple,
+        )
     if mode == "summary_focus_query":
         if model is None:
             raise ValueError("summary_focus_query fetch mode requires a model")
         # Empty overall_query falls back to focus-only behaviour at format
         # time; we keep the *_query mode label so logs stay diagnostic.
         return _make_summary_fetch_tool(
-            collector, model, overall_query=overall_query or None
+            collector,
+            model,
+            overall_query=overall_query or None,
+            approved_domains=approved_domain_tuple,
         )
     raise ValueError(
         f"Unknown fetch mode {mode!r}; expected one of {FETCH_MODES}"
