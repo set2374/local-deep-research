@@ -887,7 +887,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                         for msg in msgs:
                             if isinstance(msg, AIMessage):
                                 agent_messages.append(msg)
-                                content = msg.content or ""
+                                content = _message_visible_text(msg)
                                 tool_calls = getattr(msg, "tool_calls", [])
                                 if content and not tool_calls:
                                     final_content = content
@@ -907,7 +907,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                     for msg in msgs:
                         if isinstance(msg, AIMessage):
                             agent_messages.append(msg)
-                            content = msg.content or ""
+                            content = _message_visible_text(msg)
                             tool_calls = getattr(msg, "tool_calls", [])
 
                             if tool_calls:

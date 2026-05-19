@@ -555,6 +555,45 @@ class TestLangGraphAgentStrategy:
             for event in progress_events
         )
 
+    def test_agent_final_answer_extracts_visible_content_blocks(self):
+        from langchain_core.messages import AIMessage
+
+        class FakeTool:
+            name = "search_mock"
+
+        model = MagicMock()
+        model.invoke.side_effect = AssertionError("fallback should not run")
+        strategy = self._make_strategy(
+            model=model,
+            max_iterations=3,
+            settings_snapshot={"search.tool": {"value": "mock"}},
+        )
+
+        class FakeAgent:
+            def stream(self, *args, **kwargs):
+                yield {
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content=[
+                                    {
+                                        "type": "text",
+                                        "text": "Visible block answer [1].",
+                                    }
+                                ]
+                            )
+                        ]
+                    }
+                }
+
+        with (
+            patch.object(strategy, "_build_tools", return_value=[FakeTool()]),
+            patch("langchain.agents.create_agent", return_value=FakeAgent()),
+        ):
+            result = strategy.analyze_topic("bounded question")
+
+        assert result["current_knowledge"] == "Visible block answer [1]."
+
     def test_fallback_synthesis_uses_bounded_source_bundle(self):
         model = MagicMock()
         model.invoke.return_value = MagicMock(content="Bounded synthesis.")
