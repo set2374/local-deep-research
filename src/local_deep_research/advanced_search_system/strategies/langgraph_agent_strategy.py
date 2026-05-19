@@ -145,6 +145,18 @@ def _format_results(results: list[dict], start_idx: int) -> str:
     return "\n\n".join(lines) if lines else "No results."
 
 
+def _user_question_from_query(query: str) -> str:
+    """Extract the user's question from product instructions when present."""
+
+    text = str(query or "").strip()
+    marker = "Research question:"
+    if marker in text:
+        tail = text.split(marker, 1)[1].strip()
+        if tail:
+            return tail
+    return text
+
+
 def _make_web_search_tool(
     search_engine_name: str,
     model: BaseChatModel,
@@ -457,6 +469,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             settings_snapshot=settings_snapshot,
         )
         self.tool_model = self._build_tool_model()
+        self.synthesis_model = self._build_synthesis_model()
         self.collector = SearchResultsCollector(self.all_links_of_system)
 
         fetch_mode = self.get_setting(
@@ -483,6 +496,52 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         """
         tool_model_name = self.get_setting("langgraph_agent.tool_model", "")
         if not isinstance(tool_model_name, str) or not tool_model_name.strip():
+            return self.model
+
+    def _build_synthesis_model(self) -> BaseChatModel:
+        """Return the model used for emergency fallback synthesis only."""
+        synthesis_model_name = self.get_setting(
+            "langgraph_agent.synthesis_model", ""
+        )
+        if (
+            not isinstance(synthesis_model_name, str)
+            or not synthesis_model_name.strip()
+        ):
+            return self.model
+
+        synthesis_settings = dict(self.settings_snapshot or {})
+        synthesis_settings["llm.model"] = synthesis_model_name.strip()
+
+        for source_key, target_key in (
+            ("langgraph_agent.synthesis_temperature", "llm.temperature"),
+            ("langgraph_agent.synthesis_max_tokens", "llm.max_tokens"),
+            ("langgraph_agent.synthesis_extra_body", "llm.extra_body"),
+            (
+                "langgraph_agent.synthesis_reasoning_effort",
+                "llm.reasoning_effort",
+            ),
+        ):
+            value = self.get_setting(source_key, None)
+            if value is not None and value != "":
+                synthesis_settings[target_key] = value
+
+        if not self.get_setting(
+            "langgraph_agent.synthesis_reasoning_effort", ""
+        ):
+            synthesis_settings.pop("llm.reasoning_effort", None)
+
+        try:
+            from local_deep_research.config.llm_config import get_llm
+
+            logger.info(
+                "Using configured fallback synthesis LLM for LangGraph: "
+                f"{synthesis_model_name.strip()}"
+            )
+            return get_llm(settings_snapshot=synthesis_settings)
+        except Exception:
+            logger.exception(
+                "Failed to build fallback synthesis LLM; using lead model"
+            )
             return self.model
 
         tool_settings = dict(self.settings_snapshot or {})
@@ -731,10 +790,27 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                 "4. Do not treat any source tool as mandatory for every query; "
                 "choose tools based on the legal issue, jurisdiction, and source type needed.\n"
             )
+            coverage_line = (
+                "5. Before the first tool call, decompose the user's request into "
+                "the distinct legal concepts, jurisdictions, and source types that "
+                "must be researched. Give each requested concept its own search path; "
+                "do not stop after finding sources for only the first concept. For "
+                "state-law questions involving accounts, procedures, legal statuses, "
+                "remedies, statutes, rules, or recent changes, include official or "
+                "statutory-source searches using the user's legal terms and sensible "
+                "synonyms. If a source path returns no results, retry with narrower "
+                "or alternate terms before concluding that the approved sources are "
+                "insufficient.\n"
+            )
         else:
             specialized_line = (
                 "4. Use search_[engine] tools for domain-specific searches "
                 "(search_arxiv for science, search_pubmed for medical, etc.).\n"
+            )
+            coverage_line = (
+                "5. Before the first tool call, decompose multi-part questions into "
+                "the distinct concepts that must be researched and give each concept "
+                "its own search path.\n"
             )
         system_prompt = (
             f"You are a research assistant writing a research report. Today's date: {current_date}.\n"
@@ -748,7 +824,8 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             f"{sub_research_line}"
             f"{fetch_line}"
             f"{specialized_line}"
-            "5. When you have enough information, provide a comprehensive answer "
+            f"{coverage_line}"
+            "6. When you have enough information, provide a comprehensive answer "
             "citing sources as [1], [2], etc.\n"
         )
 
@@ -785,6 +862,27 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                     iteration += 1
                     progress = 10 + int((iteration / effective_max) * 75)
                     msgs = chunk[node_key].get("messages", [])
+                    if iteration > effective_max:
+                        for msg in msgs:
+                            if isinstance(msg, AIMessage):
+                                agent_messages.append(msg)
+                                content = msg.content or ""
+                                tool_calls = getattr(msg, "tool_calls", [])
+                                if content and not tool_calls:
+                                    final_content = content
+                                    break
+                        if final_content:
+                            break
+                        self._update_progress(
+                            "Iteration limit reached; synthesizing gathered sources",
+                            90,
+                            {
+                                "phase": "synthesis",
+                                "type": "iteration_limit",
+                                "iterations": effective_max,
+                            },
+                        )
+                        break
                     for msg in msgs:
                         if isinstance(msg, AIMessage):
                             agent_messages.append(msg)
@@ -861,26 +959,68 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         results = self.collector.results
         if not results:
             return "Research could not be completed within the iteration limit."
+        clean_query = _user_question_from_query(query)
+        max_sources = max(
+            1,
+            int(self.get_setting("langgraph_agent.fallback_max_sources", 12) or 12),
+        )
+        max_chars = max(
+            200,
+            int(self.get_setting("langgraph_agent.fallback_source_chars", 900) or 900),
+        )
         summaries = []
-        for r in results[:20]:
+        for r in results[:max_sources]:
+            snippet = str(r.get("snippet", "") or "")
+            if len(snippet) > max_chars:
+                snippet = snippet[:max_chars].rstrip() + "..."
             summaries.append(
                 f"[{r.get('index', '?')}] {r.get('title', '')}: "
-                f"{r.get('snippet', '')}"
+                f"{snippet}"
             )
-        prompt = (
-            f"Synthesize a comprehensive answer to: {query}\n\n"
-            f"Based on these sources:\n" + "\n".join(summaries)
+        target_words = str(
+            self.get_setting("langgraph_agent.fallback_target_words", "") or ""
+        ).strip()
+        target_line = (
+            f"Target about {target_words} words. "
+            if target_words
+            else "Write a concise but substantive answer. "
         )
+        prompt = (
+            f"Synthesize a focused legal research answer to: {clean_query}\n\n"
+            "Use only the indexed sources below. Cite propositions with source "
+            "numbers like [1]. Prioritize governing statutes, rules, and leading "
+            "primary authority over incidental examples. "
+            f"{target_line}"
+            "Write the answer now; do not ask for more time, do not describe "
+            "internal research limits, and do not repeat the research instructions. "
+            "If the source set is incomplete, say so precisely instead of "
+            "substituting unrelated law.\n\n"
+            "Indexed sources:\n" + "\n".join(summaries)
+        )
+        timeout_seconds = float(
+            self.get_setting(
+                "langgraph_agent.fallback_synthesis_timeout",
+                self.get_setting("llm.request_timeout", 60),
+            )
+            or 60
+        )
+        executor = ThreadPoolExecutor(max_workers=1)
         try:
-            response = self.model.invoke(prompt)
+            future = executor.submit(self.synthesis_model.invoke, prompt)
+            response = future.result(timeout=max(1.0, timeout_seconds))
             return (
                 response.content
                 if hasattr(response, "content")
                 else str(response)
             )
+        except TimeoutError:
+            logger.exception("Fallback synthesis timed out")
+            return "Research collected sources but synthesis timed out before the answer could be completed."
         except Exception as exc:
             logger.exception("Fallback synthesis failed")
             return f"Research collected {len(results)} sources but synthesis failed: {exc}"
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _finalize(
         self,

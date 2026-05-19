@@ -365,6 +365,251 @@ class TestLangGraphAgentStrategy:
         finally:
             retriever_registry.clear()
 
+    def test_agent_prompt_requires_decomposed_source_paths_for_legal_questions(self):
+        from langchain_core.messages import AIMessage
+
+        captured = {}
+
+        class FakeTool:
+            def __init__(self, name):
+                self.name = name
+
+        class FakeAgent:
+            def stream(self, *args, **kwargs):
+                yield {"agent": {"messages": [AIMessage(content="Done.")]}}
+
+        def fake_create_agent(*, model, tools, system_prompt):
+            captured["system_prompt"] = system_prompt
+            return FakeAgent()
+
+        strategy = self._make_strategy(include_sub_research=False)
+        with (
+            patch.object(
+                strategy,
+                "_build_tools",
+                return_value=[
+                    FakeTool("search_gov_sources"),
+                    FakeTool("search_litigus_library"),
+                ],
+            ),
+            patch("langchain.agents.create_agent", side_effect=fake_create_agent),
+        ):
+            result = strategy.analyze_topic(
+                "Explain state co-owner account rules and official filing requirements."
+            )
+
+        assert result["current_knowledge"] == "Done."
+        assert "Before the first tool call, decompose the user's request" in captured["system_prompt"]
+        assert "Give each requested concept its own search path" in captured["system_prompt"]
+        assert "state-law questions involving accounts" in captured["system_prompt"]
+        assert "official or statutory-source searches" in captured["system_prompt"]
+
+    def test_programmatic_iteration_cap_synthesizes_before_extra_tool_turn(self):
+        from langchain_core.messages import AIMessage
+
+        class FakeTool:
+            name = "search_mock"
+
+        model = MagicMock()
+        model.invoke.return_value = MagicMock(content="Synthesized capped answer.")
+        strategy = self._make_strategy(
+            model=model,
+            max_iterations=3,
+            settings_snapshot={
+                "search.tool": {"value": "mock"},
+                "llm.request_timeout": 2,
+            },
+        )
+
+        class FakeAgent:
+            def stream(self, *args, **kwargs):
+                strategy.collector.add_results(
+                    [{"title": "Source", "link": "https://example.com", "snippet": "Snippet"}]
+                )
+                for index in range(4):
+                    yield {
+                        "agent": {
+                            "messages": [
+                                AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "search_mock",
+                                            "args": {"query": f"query {index}"},
+                                            "id": f"call-{index}",
+                                        }
+                                    ],
+                                )
+                            ]
+                        }
+                    }
+
+        progress_events = []
+        strategy.set_progress_callback(
+            lambda message, percent, metadata: progress_events.append(
+                (message, percent, metadata)
+            )
+        )
+
+        with (
+            patch.object(strategy, "_build_tools", return_value=[FakeTool()]),
+            patch("langchain.agents.create_agent", return_value=FakeAgent()),
+        ):
+            result = strategy.analyze_topic("bounded question")
+
+        tool_iterations = [
+            event[2].get("iteration")
+            for event in progress_events
+            if event[2].get("phase") == "tool_call"
+        ]
+        assert tool_iterations == [1, 2, 3]
+        assert any(
+            event[2].get("type") == "iteration_limit"
+            for event in progress_events
+        )
+        assert result["current_knowledge"] == "Synthesized capped answer."
+
+    def test_iteration_cap_accepts_final_answer_after_budget_turn(self):
+        from langchain_core.messages import AIMessage
+
+        class FakeTool:
+            name = "search_mock"
+
+        model = MagicMock()
+        model.invoke.side_effect = AssertionError("fallback should not run")
+        strategy = self._make_strategy(
+            model=model,
+            max_iterations=3,
+            settings_snapshot={"search.tool": {"value": "mock"}},
+        )
+
+        class FakeAgent:
+            def stream(self, *args, **kwargs):
+                for index in range(3):
+                    yield {
+                        "agent": {
+                            "messages": [
+                                AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "search_mock",
+                                            "args": {"query": f"query {index}"},
+                                            "id": f"call-{index}",
+                                        }
+                                    ],
+                                )
+                            ]
+                        }
+                    }
+                yield {"agent": {"messages": [AIMessage(content="Final answer [1].")]}}
+
+        progress_events = []
+        strategy.set_progress_callback(
+            lambda message, percent, metadata: progress_events.append(
+                (message, percent, metadata)
+            )
+        )
+
+        with (
+            patch.object(strategy, "_build_tools", return_value=[FakeTool()]),
+            patch("langchain.agents.create_agent", return_value=FakeAgent()),
+        ):
+            result = strategy.analyze_topic("bounded question")
+
+        assert result["current_knowledge"] == "Final answer [1]."
+        assert not any(
+            event[2].get("type") == "iteration_limit"
+            for event in progress_events
+        )
+
+    def test_fallback_synthesis_uses_bounded_source_bundle(self):
+        model = MagicMock()
+        model.invoke.return_value = MagicMock(content="Bounded synthesis.")
+        strategy = self._make_strategy(
+            model=model,
+            settings_snapshot={
+                "search.tool": {"value": "mock"},
+                "langgraph_agent.fallback_max_sources": 2,
+                "langgraph_agent.fallback_source_chars": 200,
+                "langgraph_agent.fallback_target_words": "900-1400",
+                "langgraph_agent.fallback_synthesis_timeout": 90,
+            },
+        )
+        strategy.collector.add_results(
+            [
+                {"title": "One", "link": "https://one.example", "snippet": "A" * 260},
+                {"title": "Two", "link": "https://two.example", "snippet": "B" * 260},
+                {"title": "Three", "link": "https://three.example", "snippet": "C" * 260},
+            ]
+        )
+
+        result = strategy._synthesize_from_collector("question")
+        prompt = model.invoke.call_args.args[0]
+
+        assert result == "Bounded synthesis."
+        assert "[1] One" in prompt
+        assert "[2] Two" in prompt
+        assert "[3] Three" not in prompt
+        assert "A" * 200 in prompt
+        assert "A" * 201 not in prompt
+        assert "Target about 900-1400 words" in prompt
+
+    def test_fallback_synthesis_uses_user_question_not_product_instructions(self):
+        model = MagicMock()
+        model.invoke.return_value = MagicMock(content="Focused synthesis.")
+        strategy = self._make_strategy(
+            model=model,
+            settings_snapshot={"search.tool": {"value": "mock"}},
+        )
+        strategy.collector.add_results(
+            [{"title": "One", "link": "https://one.example", "snippet": "A"}]
+        )
+
+        strategy._synthesize_from_collector(
+            "Research instructions for this LitigusAI run:\n"
+            "- Use only approved legal sources.\n\n"
+            "Research question:\nWhat is the governing rule?"
+        )
+        prompt = model.invoke.call_args.args[0]
+
+        assert "What is the governing rule?" in prompt
+        assert "Use only approved legal sources" not in prompt
+
+    def test_fallback_synthesis_uses_configured_synthesis_model(self):
+        lead_model = MagicMock()
+        synthesis_model = MagicMock()
+        synthesis_model.invoke.return_value = MagicMock(content="Synthesis model answer.")
+
+        with patch(
+            "local_deep_research.config.llm_config.get_llm",
+            return_value=synthesis_model,
+        ) as get_llm:
+            strategy = self._make_strategy(
+                model=lead_model,
+                settings_snapshot={
+                    "search.tool": {"value": "mock"},
+                    "langgraph_agent.synthesis_model": "deepseek-v4-pro",
+                    "langgraph_agent.synthesis_extra_body": {
+                        "thinking": {"type": "enabled"}
+                    },
+                    "langgraph_agent.synthesis_reasoning_effort": "high",
+                },
+            )
+
+        strategy.collector.add_results(
+            [{"title": "One", "link": "https://one.example", "snippet": "A"}]
+        )
+
+        result = strategy._synthesize_from_collector("question")
+        settings = get_llm.call_args.kwargs["settings_snapshot"]
+
+        assert result == "Synthesis model answer."
+        assert settings["llm.model"] == "deepseek-v4-pro"
+        assert settings["llm.extra_body"] == {"thinking": {"type": "enabled"}}
+        assert settings["llm.reasoning_effort"] == "high"
+        assert synthesis_model.invoke.called
+        assert not lead_model.invoke.called
 
 # ---------------------------------------------------------------------------
 # Citation offset for detailed report mode

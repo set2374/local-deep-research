@@ -13,6 +13,57 @@ from unittest.mock import Mock, patch
 import pytest
 
 
+class TestReasoningContentChatOpenAI:
+    """Tests provider-extension preservation for thinking-mode endpoints."""
+
+    def test_create_chat_result_preserves_reasoning_content(self):
+        from local_deep_research.llm.providers.openai_base import ChatOpenAI
+
+        llm = ChatOpenAI(model="deepseek-v4-pro", api_key="test-api-key")
+        result = llm._create_chat_result(
+            {
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Use source [1].",
+                            "reasoning_content": "private reasoning",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                    "total_tokens": 3,
+                },
+            }
+        )
+
+        message = result.generations[0].message
+        assert message.additional_kwargs["reasoning_content"] == "private reasoning"
+
+    def test_request_payload_passes_reasoning_content_back(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from local_deep_research.llm.providers.openai_base import ChatOpenAI
+
+        llm = ChatOpenAI(model="deepseek-v4-pro", api_key="test-api-key")
+        payload = llm._get_request_payload(
+            [
+                HumanMessage(content="Research this."),
+                AIMessage(
+                    content="I need a source.",
+                    additional_kwargs={"reasoning_content": "private reasoning"},
+                ),
+                HumanMessage(content="Continue."),
+            ]
+        )
+
+        assert payload["messages"][1]["role"] == "assistant"
+        assert payload["messages"][1]["reasoning_content"] == "private reasoning"
+
+
 class TestOpenAICompatibleProviderAttributes:
     """Tests for OpenAICompatibleProvider class attributes."""
 

@@ -1,6 +1,9 @@
 """Base OpenAI-compatible endpoint provider for Local Deep Research."""
 
-from langchain_openai import ChatOpenAI
+from typing import Any
+
+from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI as _ChatOpenAI
 from loguru import logger
 
 from ...config.thread_settings import (
@@ -9,6 +12,45 @@ from ...config.thread_settings import (
 )
 from ...utilities.url_utils import normalize_url
 from .base import BaseLLMProvider
+
+
+class ChatOpenAI(_ChatOpenAI):
+    """ChatOpenAI wrapper that preserves OpenAI-compatible reasoning fields.
+
+    DeepSeek thinking mode returns ``reasoning_content`` on assistant messages
+    and requires callers to include that same field when the message is sent
+    back in a multi-turn tool loop. LangChain's OpenAI adapter currently drops
+    the provider extension, which causes the next tool-calling turn to fail.
+    """
+
+    def _create_chat_result(self, response: Any, generation_info: dict | None = None):
+        response_dict = response if isinstance(response, dict) else response.model_dump()
+        result = super()._create_chat_result(response, generation_info)
+        choices = response_dict.get("choices") if isinstance(response_dict, dict) else []
+        if not isinstance(choices, list):
+            return result
+        for generation, choice in zip(result.generations, choices):
+            message_dict = choice.get("message") if isinstance(choice, dict) else {}
+            reasoning_content = (
+                message_dict.get("reasoning_content") if isinstance(message_dict, dict) else None
+            )
+            if reasoning_content and isinstance(generation.message, AIMessage):
+                generation.message.additional_kwargs["reasoning_content"] = reasoning_content
+        return result
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        messages = self._convert_input(input_).to_messages()
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        payload_messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(payload_messages, list):
+            return payload
+        for source_message, payload_message in zip(messages, payload_messages):
+            if not isinstance(source_message, AIMessage) or not isinstance(payload_message, dict):
+                continue
+            reasoning_content = source_message.additional_kwargs.get("reasoning_content")
+            if reasoning_content:
+                payload_message["reasoning_content"] = reasoning_content
+        return payload
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):

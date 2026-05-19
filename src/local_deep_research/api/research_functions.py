@@ -25,9 +25,10 @@ def _close_system(system):
     from ..utilities.resource_utils import safe_close
 
     safe_close(system, "search system")
-    if hasattr(system, "search"):
+    programmatic_mode = bool(getattr(system, "programmatic_mode", False))
+    if hasattr(system, "search") and not programmatic_mode:
         safe_close(system.search, "search engine")
-    if hasattr(system, "model"):
+    if hasattr(system, "model") and not programmatic_mode:
         safe_close(system.model, "system LLM")
 
 

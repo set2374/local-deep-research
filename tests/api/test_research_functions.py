@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from local_deep_research.api.research_functions import (
+    _close_system,
     _init_search_system,
     quick_summary,
     generate_report,
@@ -156,6 +157,34 @@ class TestInitSearchSystem:
             _init_search_system(settings_snapshot=sample_settings_snapshot)
             call_kwargs = mock_class.call_args[1]
             assert call_kwargs["settings_snapshot"] == sample_settings_snapshot
+
+
+class TestCloseSystem:
+    """Tests for API cleanup semantics."""
+
+    def test_programmatic_system_does_not_close_outer_search_or_model(self):
+        system = MagicMock()
+        system.programmatic_mode = True
+        system.search = MagicMock()
+        system.model = MagicMock()
+
+        _close_system(system)
+
+        system.close.assert_called_once()
+        system.search.close.assert_not_called()
+        system.model.close.assert_not_called()
+
+    def test_interactive_system_closes_outer_search_and_model(self):
+        system = MagicMock()
+        system.programmatic_mode = False
+        system.search = MagicMock()
+        system.model = MagicMock()
+
+        _close_system(system)
+
+        system.close.assert_called_once()
+        system.search.close.assert_called_once()
+        system.model.close.assert_called_once()
 
 
 class TestQuickSummary:
