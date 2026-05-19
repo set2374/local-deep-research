@@ -145,6 +145,27 @@ def _format_results(results: list[dict], start_idx: int) -> str:
     return "\n\n".join(lines) if lines else "No results."
 
 
+def _message_visible_text(message: Any) -> str:
+    """Extract user-visible text from a LangChain message or raw response."""
+
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(
+            part.strip() for part in parts if part and part.strip()
+        ).strip()
+    return str(content).strip() if content is not None else ""
+
+
 def _user_question_from_query(query: str) -> str:
     """Extract the user's question from product instructions when present."""
 
@@ -498,6 +519,35 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         if not isinstance(tool_model_name, str) or not tool_model_name.strip():
             return self.model
 
+        tool_settings = dict(self.settings_snapshot or {})
+        tool_settings["llm.model"] = tool_model_name.strip()
+
+        for source_key, target_key in (
+            ("langgraph_agent.tool_temperature", "llm.temperature"),
+            ("langgraph_agent.tool_max_tokens", "llm.max_tokens"),
+            ("langgraph_agent.tool_extra_body", "llm.extra_body"),
+            ("langgraph_agent.tool_reasoning_effort", "llm.reasoning_effort"),
+        ):
+            value = self.get_setting(source_key, None)
+            if value is not None and value != "":
+                tool_settings[target_key] = value
+
+        if not self.get_setting("langgraph_agent.tool_reasoning_effort", ""):
+            tool_settings.pop("llm.reasoning_effort", None)
+
+        try:
+            from local_deep_research.config.llm_config import get_llm
+
+            logger.info(
+                f"Using helper LLM for LangGraph tool internals: {tool_model_name.strip()}"
+            )
+            return get_llm(settings_snapshot=tool_settings)
+        except Exception:
+            logger.exception(
+                "Failed to build helper LLM for LangGraph tool internals; using lead model"
+            )
+            return self.model
+
     def _build_synthesis_model(self) -> BaseChatModel:
         """Return the model used for emergency fallback synthesis only."""
         synthesis_model_name = self.get_setting(
@@ -541,35 +591,6 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         except Exception:
             logger.exception(
                 "Failed to build fallback synthesis LLM; using lead model"
-            )
-            return self.model
-
-        tool_settings = dict(self.settings_snapshot or {})
-        tool_settings["llm.model"] = tool_model_name.strip()
-
-        for source_key, target_key in (
-            ("langgraph_agent.tool_temperature", "llm.temperature"),
-            ("langgraph_agent.tool_max_tokens", "llm.max_tokens"),
-            ("langgraph_agent.tool_extra_body", "llm.extra_body"),
-            ("langgraph_agent.tool_reasoning_effort", "llm.reasoning_effort"),
-        ):
-            value = self.get_setting(source_key, None)
-            if value is not None and value != "":
-                tool_settings[target_key] = value
-
-        if not self.get_setting("langgraph_agent.tool_reasoning_effort", ""):
-            tool_settings.pop("llm.reasoning_effort", None)
-
-        try:
-            from local_deep_research.config.llm_config import get_llm
-
-            logger.info(
-                f"Using helper LLM for LangGraph tool internals: {tool_model_name.strip()}"
-            )
-            return get_llm(settings_snapshot=tool_settings)
-        except Exception:
-            logger.exception(
-                "Failed to build helper LLM for LangGraph tool internals; using lead model"
             )
             return self.model
 
@@ -991,7 +1012,9 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             "numbers like [1]. Prioritize governing statutes, rules, and leading "
             "primary authority over incidental examples. "
             f"{target_line}"
-            "Write the answer now; do not ask for more time, do not describe "
+            "Write the answer now in visible Markdown text; do not return an "
+            "empty message, hidden-only reasoning, or tool-call-only response. "
+            "Do not ask for more time, do not describe "
             "internal research limits, and do not repeat the research instructions. "
             "If the source set is incomplete, say so precisely instead of "
             "substituting unrelated law.\n\n"
@@ -1008,10 +1031,13 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         try:
             future = executor.submit(self.synthesis_model.invoke, prompt)
             response = future.result(timeout=max(1.0, timeout_seconds))
+            content = _message_visible_text(response)
+            if content:
+                return content
+            logger.warning("Fallback synthesis returned no visible content")
             return (
-                response.content
-                if hasattr(response, "content")
-                else str(response)
+                f"Research collected {len(results)} sources but synthesis returned "
+                "no visible answer before the answer could be completed."
             )
         except TimeoutError:
             logger.exception("Fallback synthesis timed out")

@@ -292,6 +292,38 @@ class TestLangGraphAgentStrategy:
         strategy = self._make_strategy(search=mock_search, settings_snapshot={})
         assert strategy._search_engine_name == "duckduckgo"
 
+    def test_build_tool_model_uses_configured_helper_model(self):
+        from local_deep_research.advanced_search_system.strategies.langgraph_agent_strategy import (
+            LangGraphAgentStrategy,
+        )
+
+        lead_model = MagicMock()
+        helper_model = MagicMock()
+
+        with patch(
+            "local_deep_research.config.llm_config.get_llm",
+            return_value=helper_model,
+        ) as get_llm:
+            strategy = LangGraphAgentStrategy(
+                model=lead_model,
+                search=MagicMock(),
+                all_links_of_system=[],
+                settings_snapshot={
+                    "search.tool": {"value": "mock"},
+                    "langgraph_agent.tool_model": "deepseek-v4-flash",
+                    "langgraph_agent.tool_extra_body": {
+                        "thinking": {"type": "disabled"}
+                    },
+                    "langgraph_agent.tool_max_tokens": 4000,
+                },
+            )
+
+        settings = get_llm.call_args.kwargs["settings_snapshot"]
+        assert strategy.tool_model is helper_model
+        assert settings["llm.model"] == "deepseek-v4-flash"
+        assert settings["llm.extra_body"] == {"thinking": {"type": "disabled"}}
+        assert settings["llm.max_tokens"] == 4000
+
     def test_finalize_can_skip_final_citation_handler(self):
         strategy = self._make_strategy(
             settings_snapshot={
@@ -610,6 +642,21 @@ class TestLangGraphAgentStrategy:
         assert settings["llm.reasoning_effort"] == "high"
         assert synthesis_model.invoke.called
         assert not lead_model.invoke.called
+
+    def test_fallback_synthesis_rejects_hidden_only_response(self):
+        model = MagicMock()
+        model.invoke.return_value = MagicMock(content="")
+        strategy = self._make_strategy(
+            model=model,
+            settings_snapshot={"search.tool": {"value": "mock"}},
+        )
+        strategy.collector.add_results(
+            [{"title": "One", "link": "https://one.example", "snippet": "A"}]
+        )
+
+        result = strategy._synthesize_from_collector("question")
+
+        assert "no visible answer" in result
 
 # ---------------------------------------------------------------------------
 # Citation offset for detailed report mode
