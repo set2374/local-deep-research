@@ -199,7 +199,14 @@ class PDFService:
             # Generate PDF
             # Use BytesIO to get bytes instead of writing to file
             pdf_buffer = io.BytesIO()
-            html_doc.write_pdf(pdf_buffer, stylesheets=css_list)
+            # PYSEC-2026-3412 is reachable only when HTML presentational hints
+            # are enabled. Keep the security boundary explicit even though
+            # WeasyPrint currently defaults this option to False.
+            html_doc.write_pdf(
+                pdf_buffer,
+                stylesheets=css_list,
+                presentational_hints=False,
+            )
 
             # Get the PDF bytes
             pdf_bytes = pdf_buffer.getvalue()

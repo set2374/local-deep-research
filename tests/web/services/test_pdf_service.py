@@ -454,9 +454,11 @@ class TestSafeUrlFetcher:
         from local_deep_research.web.services import pdf_service as pdf_module
         from local_deep_research.web.services.pdf_service import PDFService
 
-        service = PDFService()
-
-        with patch.object(pdf_module, "HTML") as mock_html:
+        with (
+            patch.object(pdf_module, "CSS"),
+            patch.object(pdf_module, "HTML") as mock_html,
+        ):
+            service = PDFService()
             mock_html.return_value.write_pdf.return_value = None
             service.markdown_to_pdf("content")
 
@@ -464,6 +466,12 @@ class TestSafeUrlFetcher:
             assert (
                 mock_html.call_args.kwargs.get("url_fetcher")
                 is pdf_module._safe_url_fetcher
+            )
+            assert (
+                mock_html.return_value.write_pdf.call_args.kwargs[
+                    "presentational_hints"
+                ]
+                is False
             )
 
     def test_render_succeeds_when_body_url_is_blocked(self):
