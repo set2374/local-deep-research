@@ -629,7 +629,9 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             self.get_setting("langgraph_agent.registered_retriever_tools", [])
         )
         registered_tool_descriptions = _coerce_tool_descriptions(
-            self.get_setting("langgraph_agent.registered_retriever_tool_descriptions", {})
+            self.get_setting(
+                "langgraph_agent.registered_retriever_tool_descriptions", {}
+            )
         )
 
         from local_deep_research.web_search_engines.retriever_registry import (
@@ -678,12 +680,16 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             self.collector,
             model=self.tool_model,
             overall_query=overall_query,
-            approved_domains=self.get_setting("search.fetch.approved_domains", []),
+            approved_domains=self.get_setting(
+                "search.fetch.approved_domains", []
+            ),
         )
         if fetch is not None:
             tools.append(fetch)
 
-        pinned = self._search_engine_name in retriever_registry.list_registered()
+        pinned = (
+            self._search_engine_name in retriever_registry.list_registered()
+        )
         if registered_tool_names:
             logger.info(
                 "Using explicit registered retriever tools: "
@@ -772,7 +778,9 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         # so the agent isn't told to use a tool that doesn't exist.
         current_date = datetime.now(UTC).strftime("%Y-%m-%d")
         tool_names = [str(getattr(item, "name", "")) for item in tools]
-        source_tool_names = [name for name in tool_names if name.startswith("search_")]
+        source_tool_names = [
+            name for name in tool_names if name.startswith("search_")
+        ]
         if source_tool_names:
             search_line = (
                 "1. Use the approved legal source tools as peer sources: "
@@ -983,11 +991,17 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
         clean_query = _user_question_from_query(query)
         max_sources = max(
             1,
-            int(self.get_setting("langgraph_agent.fallback_max_sources", 12) or 12),
+            int(
+                self.get_setting("langgraph_agent.fallback_max_sources", 12)
+                or 12
+            ),
         )
         max_chars = max(
             200,
-            int(self.get_setting("langgraph_agent.fallback_source_chars", 900) or 900),
+            int(
+                self.get_setting("langgraph_agent.fallback_source_chars", 900)
+                or 900
+            ),
         )
         summaries = []
         for r in results[:max_sources]:
@@ -995,8 +1009,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             if len(snippet) > max_chars:
                 snippet = snippet[:max_chars].rstrip() + "..."
             summaries.append(
-                f"[{r.get('index', '?')}] {r.get('title', '')}: "
-                f"{snippet}"
+                f"[{r.get('index', '?')}] {r.get('title', '')}: {snippet}"
             )
         target_words = str(
             self.get_setting("langgraph_agent.fallback_target_words", "") or ""
@@ -1058,7 +1071,9 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
     ) -> Dict[str, Any]:
         """Apply citation handling and build the return dict."""
         skip_citation_handler = bool(
-            self.get_setting("langgraph_agent.skip_final_citation_handler", False)
+            self.get_setting(
+                "langgraph_agent.skip_final_citation_handler", False
+            )
         )
         synthesis_message = (
             f"Finalizing {len(self.collector.results)} sources with agent citations"
