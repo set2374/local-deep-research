@@ -46,7 +46,7 @@ dependencies = [
     "sqlalchemy-utc~=0.14",
     "wikipedia~=1.4",
     "arxiv~=2.4",
-    "pypdf~=6.10.1",  # CVE-2026-33123, CVE-2026-31826, GHSA-9m86-7pmv-2852, CVE-2026-27888, CVE-2026-27024, CVE-2026-0777, CVE-2025-55197, GHSA-3crg-w4f6-42mx fixes
+    "pypdf>=6.15,<7",  # security floor through PYSEC-2026-3656
     "sentence-transformers~=5.2",
     "faiss-cpu~=1.13",
     "pydantic~=2.12",
@@ -54,7 +54,7 @@ dependencies = [
     "toml~=0.10",
     "platformdirs~=4.5",
     "dynaconf~=3.2",
-    "requests>=2.32",  # CVE-2026-25645 patched in 2.33; PDM override ensures 2.33+ in dev
+    "requests>=2.33,<3",  # CVE-2026-25645 and PYSEC-2026-2275
     "urllib3~=2.7",  # CVE-2026-44431 CVE-2026-44432 fix
     "tiktoken~=0.12",
     "xmltodict~=1.0",
@@ -88,13 +88,15 @@ dependencies = [
     "sqlcipher3~=0.6; (platform_machine == \"aarch64\" or platform_machine == \"arm64\") and sys_platform == \"linux\"",
     "sqlcipher3~=0.6; sys_platform != \"linux\"",
     "lxml-html-clean>=0.4.4",  # CVE-2026-28350: base tag injection bypass
+    # PYSEC-2026-3412 has no patched release. PDFService explicitly forces
+    # presentational_hints=False, which removes the vulnerable code path.
     "weasyprint~=68.1",
     "Pillow>=12.1.1",  # CVE-2026-25990: out-of-bounds write in PSD
     "cryptography>=46.0.7",  # CVE-2026-26007: SECT curves subgroup attack; CVE-2026-39892: non-contiguous buffer overflow
     "apprise~=1.9",
     "markdown~=3.10",
     "pypandoc-binary~=1.16",
-    "datasets~=4.5",
+    "datasets>=5.0.1,<6",  # PYSEC-2026-3716 path traversal
     "pyarrow~=23.0",
     "langchain-experimental~=0.4",
 ]
