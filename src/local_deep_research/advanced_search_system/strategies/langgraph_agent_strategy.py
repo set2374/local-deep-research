@@ -494,7 +494,9 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             retriever_registry,
         )
 
-        pinned = self._search_engine_name in retriever_registry.list_registered()
+        pinned = (
+            self._search_engine_name in retriever_registry.list_registered()
+        )
         if pinned:
             logger.info(
                 f"Skipping specialized search tools and sub-research tool: "
