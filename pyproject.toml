@@ -54,7 +54,9 @@ dependencies = [
     "toml~=0.10",
     "platformdirs~=4.5",
     "dynaconf~=3.2",
-    "requests>=2.33,<3",  # CVE-2026-25645 and PYSEC-2026-2275
+    # Keep published metadata compatible with arxiv's requests~=2.32.0 cap.
+    # The PDM override below and downstream uv lock select the patched 2.33+ line.
+    "requests>=2.32,<3",
     "urllib3~=2.7",  # CVE-2026-44431 CVE-2026-44432 fix
     "tiktoken~=0.12",
     "xmltodict~=1.0",
