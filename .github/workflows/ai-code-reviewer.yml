@@ -40,7 +40,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      - name: Check reviewer availability
+        id: reviewer
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+            echo "OPENROUTER_API_KEY is not configured; optional AI review is skipped."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Get PR diff
+        if: steps.reviewer.outputs.enabled == 'true'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -50,11 +63,17 @@ jobs:
           git diff "origin/$BASE_REF...HEAD" --no-color > diff.txt
 
       - name: Download AI reviewer script
+        if: steps.reviewer.outputs.enabled == 'true'
+        env:
+          AI_REVIEWER_REF: e7fe618a8a28831dfcd5a3227ebbf667b3d3c43b
+          AI_REVIEWER_SHA256: 2d613a562bf4631b394d826fdc164510097d16ac5355c996edcdf2a36c3346fe
         run: |
-          curl -fsSL https://raw.githubusercontent.com/LearningCircuit/Friendly-AI-Reviewer/main/ai-reviewer.sh -o ai-reviewer.sh
+          curl -fsSL "https://raw.githubusercontent.com/LearningCircuit/Friendly-AI-Reviewer/${AI_REVIEWER_REF}/ai-reviewer.sh" -o ai-reviewer.sh
+          echo "${AI_REVIEWER_SHA256}  ai-reviewer.sh" | sha256sum --check --strict
           chmod +x ai-reviewer.sh
 
       - name: AI Code Review
+        if: steps.reviewer.outputs.enabled == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -169,7 +188,7 @@ jobs:
           echo "✅ AI review completed successfully"
 
       - name: Fail Workflow if Requested
-        if: env.FAIL_ON_REQUESTED_CHANGES == 'true' && env.DECISION == 'fail'
+        if: steps.reviewer.outputs.enabled == 'true' && env.FAIL_ON_REQUESTED_CHANGES == 'true' && env.DECISION == 'fail'
         run: |
           echo "❌ AI requested changes and FAIL_ON_REQUESTED_CHANGES is enabled. Failing workflow."
           echo "The review has been posted above. Please address the requested changes."
