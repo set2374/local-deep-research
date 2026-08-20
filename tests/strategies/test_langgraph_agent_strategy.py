@@ -392,12 +392,19 @@ class TestLangGraphAgentStrategy:
 
             assert names == ["search_litigus_library", "search_cornell_lii"]
             assert "web_search" not in names
-            assert tools[0].description == "Search Litigus Library for case law."
-            assert tools[1].description == "Search Cornell LII for statutes and rules."
+            assert (
+                tools[0].description == "Search Litigus Library for case law."
+            )
+            assert (
+                tools[1].description
+                == "Search Cornell LII for statutes and rules."
+            )
         finally:
             retriever_registry.clear()
 
-    def test_agent_prompt_requires_decomposed_source_paths_for_legal_questions(self):
+    def test_agent_prompt_requires_decomposed_source_paths_for_legal_questions(
+        self,
+    ):
         from langchain_core.messages import AIMessage
 
         captured = {}
@@ -424,26 +431,43 @@ class TestLangGraphAgentStrategy:
                     FakeTool("search_litigus_library"),
                 ],
             ),
-            patch("langchain.agents.create_agent", side_effect=fake_create_agent),
+            patch(
+                "langchain.agents.create_agent", side_effect=fake_create_agent
+            ),
         ):
             result = strategy.analyze_topic(
                 "Explain state co-owner account rules and official filing requirements."
             )
 
         assert result["current_knowledge"] == "Done."
-        assert "Before the first tool call, decompose the user's request" in captured["system_prompt"]
-        assert "Give each requested concept its own search path" in captured["system_prompt"]
-        assert "state-law questions involving accounts" in captured["system_prompt"]
-        assert "official or statutory-source searches" in captured["system_prompt"]
+        assert (
+            "Before the first tool call, decompose the user's request"
+            in captured["system_prompt"]
+        )
+        assert (
+            "Give each requested concept its own search path"
+            in captured["system_prompt"]
+        )
+        assert (
+            "state-law questions involving accounts"
+            in captured["system_prompt"]
+        )
+        assert (
+            "official or statutory-source searches" in captured["system_prompt"]
+        )
 
-    def test_programmatic_iteration_cap_synthesizes_before_extra_tool_turn(self):
+    def test_programmatic_iteration_cap_synthesizes_before_extra_tool_turn(
+        self,
+    ):
         from langchain_core.messages import AIMessage
 
         class FakeTool:
             name = "search_mock"
 
         model = MagicMock()
-        model.invoke.return_value = MagicMock(content="Synthesized capped answer.")
+        model.invoke.return_value = MagicMock(
+            content="Synthesized capped answer."
+        )
         strategy = self._make_strategy(
             model=model,
             max_iterations=3,
@@ -456,7 +480,13 @@ class TestLangGraphAgentStrategy:
         class FakeAgent:
             def stream(self, *args, **kwargs):
                 strategy.collector.add_results(
-                    [{"title": "Source", "link": "https://example.com", "snippet": "Snippet"}]
+                    [
+                        {
+                            "title": "Source",
+                            "link": "https://example.com",
+                            "snippet": "Snippet",
+                        }
+                    ]
                 )
                 for index in range(4):
                     yield {
@@ -534,7 +564,11 @@ class TestLangGraphAgentStrategy:
                             ]
                         }
                     }
-                yield {"agent": {"messages": [AIMessage(content="Final answer [1].")]}}
+                yield {
+                    "agent": {
+                        "messages": [AIMessage(content="Final answer [1].")]
+                    }
+                }
 
         progress_events = []
         strategy.set_progress_callback(
@@ -609,9 +643,21 @@ class TestLangGraphAgentStrategy:
         )
         strategy.collector.add_results(
             [
-                {"title": "One", "link": "https://one.example", "snippet": "A" * 260},
-                {"title": "Two", "link": "https://two.example", "snippet": "B" * 260},
-                {"title": "Three", "link": "https://three.example", "snippet": "C" * 260},
+                {
+                    "title": "One",
+                    "link": "https://one.example",
+                    "snippet": "A" * 260,
+                },
+                {
+                    "title": "Two",
+                    "link": "https://two.example",
+                    "snippet": "B" * 260,
+                },
+                {
+                    "title": "Three",
+                    "link": "https://three.example",
+                    "snippet": "C" * 260,
+                },
             ]
         )
 
@@ -626,7 +672,9 @@ class TestLangGraphAgentStrategy:
         assert "A" * 201 not in prompt
         assert "Target about 900-1400 words" in prompt
 
-    def test_fallback_synthesis_uses_user_question_not_product_instructions(self):
+    def test_fallback_synthesis_uses_user_question_not_product_instructions(
+        self,
+    ):
         model = MagicMock()
         model.invoke.return_value = MagicMock(content="Focused synthesis.")
         strategy = self._make_strategy(
@@ -650,7 +698,9 @@ class TestLangGraphAgentStrategy:
     def test_fallback_synthesis_uses_configured_synthesis_model(self):
         lead_model = MagicMock()
         synthesis_model = MagicMock()
-        synthesis_model.invoke.return_value = MagicMock(content="Synthesis model answer.")
+        synthesis_model.invoke.return_value = MagicMock(
+            content="Synthesis model answer."
+        )
 
         with patch(
             "local_deep_research.config.llm_config.get_llm",
@@ -696,6 +746,7 @@ class TestLangGraphAgentStrategy:
         result = strategy._synthesize_from_collector("question")
 
         assert "no visible answer" in result
+
 
 # ---------------------------------------------------------------------------
 # Citation offset for detailed report mode

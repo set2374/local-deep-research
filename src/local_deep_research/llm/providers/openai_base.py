@@ -23,31 +23,51 @@ class ChatOpenAI(_ChatOpenAI):
     the provider extension, which causes the next tool-calling turn to fail.
     """
 
-    def _create_chat_result(self, response: Any, generation_info: dict | None = None):
-        response_dict = response if isinstance(response, dict) else response.model_dump()
+    def _create_chat_result(
+        self, response: Any, generation_info: dict | None = None
+    ):
+        response_dict = (
+            response if isinstance(response, dict) else response.model_dump()
+        )
         result = super()._create_chat_result(response, generation_info)
-        choices = response_dict.get("choices") if isinstance(response_dict, dict) else []
+        choices = (
+            response_dict.get("choices")
+            if isinstance(response_dict, dict)
+            else []
+        )
         if not isinstance(choices, list):
             return result
         for generation, choice in zip(result.generations, choices):
-            message_dict = choice.get("message") if isinstance(choice, dict) else {}
+            message_dict = (
+                choice.get("message") if isinstance(choice, dict) else {}
+            )
             reasoning_content = (
-                message_dict.get("reasoning_content") if isinstance(message_dict, dict) else None
+                message_dict.get("reasoning_content")
+                if isinstance(message_dict, dict)
+                else None
             )
             if reasoning_content and isinstance(generation.message, AIMessage):
-                generation.message.additional_kwargs["reasoning_content"] = reasoning_content
+                generation.message.additional_kwargs["reasoning_content"] = (
+                    reasoning_content
+                )
         return result
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        payload_messages = payload.get("messages") if isinstance(payload, dict) else None
+        payload_messages = (
+            payload.get("messages") if isinstance(payload, dict) else None
+        )
         if not isinstance(payload_messages, list):
             return payload
         for source_message, payload_message in zip(messages, payload_messages):
-            if not isinstance(source_message, AIMessage) or not isinstance(payload_message, dict):
+            if not isinstance(source_message, AIMessage) or not isinstance(
+                payload_message, dict
+            ):
                 continue
-            reasoning_content = source_message.additional_kwargs.get("reasoning_content")
+            reasoning_content = source_message.additional_kwargs.get(
+                "reasoning_content"
+            )
             if reasoning_content:
                 payload_message["reasoning_content"] = reasoning_content
         return payload

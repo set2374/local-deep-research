@@ -50,9 +50,9 @@ which provides equivalent security to hash-pinned pip installs:
 This official action runs the tool in a container with internal integrity verification,
 which OSSF Scorecard accepts as equivalent to hash pinning.
 
-> **Note:** pip-audit was removed because it duplicates OSV-Scanner's coverage (both
-> query the OSV database) and its internal use of pip's dependency resolver conflicts
-> with PDM's `[tool.pdm.resolution.overrides]`, causing persistent CI failures.
+> **Note:** pip-audit now supplements OSV-Scanner by auditing a production export of
+> the committed PDM lock. It runs with `--no-deps --disable-pip`, so pip-audit checks
+> the exact resolved graph without invoking pip's resolver or bypassing PDM overrides.
 
 > **Note:** Checkov previously used `bridgecrewio/checkov-action` but was reverted to CLI
 > installation (`pip install checkov==3.2.499`) due to a known bug with multiple

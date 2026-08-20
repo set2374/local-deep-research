@@ -89,9 +89,9 @@ jobs:
         sarif_file: bandit-results.sarif
         category: bandit
 
-    # Dependency vulnerability scanning is handled by OSV-Scanner
-    # (osv-scanner.yml), which reads pdm.lock directly and doesn't
-    # fight PDM's resolution overrides the way pip-audit did.
+    # Dependency vulnerability scanning is handled by both OSV-Scanner and
+    # the lock-export pip-audit job in osv-scanner.yml. The latter uses
+    # --no-deps, so it audits PDM's resolved graph without re-resolving it.
 
     - name: Run SQL injection tests
       env:
@@ -181,7 +181,7 @@ jobs:
           python -c "import json; data=json.load(open('bandit-report.json')); print(f'  High: {len([i for i in data.get(\"results\", []) if i[\"issue_severity\"] == \"HIGH\"])}'); print(f'  Medium: {len([i for i in data.get(\"results\", []) if i[\"issue_severity\"] == \"MEDIUM\"])}'); print(f'  Low: {len([i for i in data.get(\"results\", []) if i[\"issue_severity\"] == \"LOW\"])}')" || true
         fi
         echo ""
-        echo "Dependency vulnerabilities: covered by OSV-Scanner (osv-scanner.yml)"
+        echo "Dependency vulnerabilities: covered by OSV-Scanner and lock-export pip-audit"
 
     - name: Upload security reports
       if: always()

@@ -77,7 +77,9 @@ def _url_allowed(url: str, approved_domains: tuple[str, ...]) -> bool:
         return False
     for domain in approved_domains:
         normalized = domain.lstrip(".")
-        if normalized and (host == normalized or host.endswith(f".{normalized}")):
+        if normalized and (
+            host == normalized or host.endswith(f".{normalized}")
+        ):
             return True
     return False
 

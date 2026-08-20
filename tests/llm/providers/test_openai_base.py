@@ -42,7 +42,10 @@ class TestReasoningContentChatOpenAI:
         )
 
         message = result.generations[0].message
-        assert message.additional_kwargs["reasoning_content"] == "private reasoning"
+        assert (
+            message.additional_kwargs["reasoning_content"]
+            == "private reasoning"
+        )
 
     def test_request_payload_passes_reasoning_content_back(self):
         from langchain_core.messages import AIMessage, HumanMessage
@@ -54,14 +57,18 @@ class TestReasoningContentChatOpenAI:
                 HumanMessage(content="Research this."),
                 AIMessage(
                     content="I need a source.",
-                    additional_kwargs={"reasoning_content": "private reasoning"},
+                    additional_kwargs={
+                        "reasoning_content": "private reasoning"
+                    },
                 ),
                 HumanMessage(content="Continue."),
             ]
         )
 
         assert payload["messages"][1]["role"] == "assistant"
-        assert payload["messages"][1]["reasoning_content"] == "private reasoning"
+        assert (
+            payload["messages"][1]["reasoning_content"] == "private reasoning"
+        )
 
 
 class TestOpenAICompatibleProviderAttributes:
